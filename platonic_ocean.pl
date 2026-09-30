@@ -849,11 +849,18 @@ sub score_orientation {
 
     for my $v (@$verts) {
         my ($x,$y,$z) = rotate_one($q,$v);
-        return -1e30 unless is_ocean_vec($x,$y,$z);
+
         my $d = nearest_coast_km($x,$y,$z);
+        $d = -$d unless is_ocean_vec($x,$y,$z);
+
         $worst = $d if $d < $worst;
+
+        # Maximin pruning remains valid with signed distances: once the
+        # current worst vertex cannot beat the cutoff, later vertices can
+        # only leave it unchanged or make it worse.
         return $worst if $worst <= $cutoff;
     }
+
     return $worst;
 }
 
@@ -875,7 +882,7 @@ sub save_checkpoint {
     my $tmp = "$path.tmp.$$";
 
     open my $fh, '>', $tmp or die "open $tmp: $!\n";
-    print $fh "version\t1\n";
+    print $fh "version\t2\n";
     print $fh "name\t$name\n";
     print $fh "seed\t$seed\n";
     print $fh "solid_seed\t$solid_seed\n";
@@ -921,7 +928,7 @@ sub load_checkpoint {
     close $fh;
 
     die "$path: unsupported checkpoint version\n"
-        unless defined($meta{version}) && $meta{version} == 1;
+        unless defined($meta{version}) && $meta{version} == 2;
     die "$path: checkpoint is for $meta{name}, not $name\n"
         unless defined($meta{name}) && $meta{name} eq $name;
     die "$path: --seed changed ($meta{seed} -> $seed); remove checkpoint or use matching --seed\n"
@@ -1180,14 +1187,15 @@ sub draw_vec_arc {
 sub write_csv {
     my ($path,$name,$q,$score,$verts) = @_;
     open my $fh, '>', $path or die "open $path: $!\n";
-    print $fh "solid,vertex,latitude,longitude,coast_distance_km,ocean,maximin_km,qw,qx,qy,qz\n";
+    print $fh "solid,vertex,latitude,longitude,coast_distance_km,signed_coast_distance_km,ocean,maximin_km,qw,qx,qy,qz\n";
     for my $i (0 .. $#$verts) {
         my ($x,$y,$z) = @{$verts->[$i]};
         my ($lon,$lat) = vec_to_lonlat($x,$y,$z);
         my $d = nearest_coast_km($x,$y,$z);
         my $ocean = is_ocean_vec($x,$y,$z) ? 1 : 0;
-        printf $fh "%s,%d,%.8f,%.8f,%.3f,%d,%.3f,%.12g,%.12g,%.12g,%.12g\n",
-            $name,$i,$lat,$lon,$d,$ocean,$score,@$q;
+        my $signed = $ocean ? $d : -$d;
+        printf $fh "%s,%d,%.8f,%.8f,%.3f,%.3f,%d,%.3f,%.12g,%.12g,%.12g,%.12g\n",
+            $name,$i,$lat,$lon,$d,$signed,$ocean,$score,@$q;
     }
     close $fh;
 }
