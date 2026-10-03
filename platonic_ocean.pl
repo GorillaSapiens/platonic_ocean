@@ -651,6 +651,31 @@ sub coast_key {
     return $ix + COAST_NCELL * ($iy + COAST_NCELL * $iz);
 }
 
+sub coast_bucket_min_dist2 {
+    my ($x,$y,$z,$ix,$iy,$iz) = @_;
+
+    my $xlo = -1.0 + $ix * COAST_CELL;
+    my $ylo = -1.0 + $iy * COAST_CELL;
+    my $zlo = -1.0 + $iz * COAST_CELL;
+
+    my $xhi = $xlo + COAST_CELL;
+    my $yhi = $ylo + COAST_CELL;
+    my $zhi = $zlo + COAST_CELL;
+
+    # The final bucket extends numerically past +1 because 2/0.04 = 50
+    # exactly and we need an index for coordinates equal to +1.  Clamping
+    # makes the AABB match the actual unit-sphere coordinate domain.
+    $xlo = -1.0 if $xlo < -1.0; $xhi = 1.0 if $xhi > 1.0;
+    $ylo = -1.0 if $ylo < -1.0; $yhi = 1.0 if $yhi > 1.0;
+    $zlo = -1.0 if $zlo < -1.0; $zhi = 1.0 if $zhi > 1.0;
+
+    my $dx = $x < $xlo ? $xlo - $x : $x > $xhi ? $x - $xhi : 0.0;
+    my $dy = $y < $ylo ? $ylo - $y : $y > $yhi ? $y - $yhi : 0.0;
+    my $dz = $z < $zlo ? $zlo - $z : $z > $zhi ? $z - $zhi : 0.0;
+
+    return $dx*$dx + $dy*$dy + $dz*$dz;
+}
+
 sub nearest_coast_km {
     my ($x,$y,$z) = @_;
     my $cx = coast_cell_coord($x);
@@ -669,12 +694,32 @@ sub nearest_coast_km {
                     next if $r > 0 &&
                         abs($ix-$cx) < $r && abs($iy-$cy) < $r && abs($iz-$cz) < $r;
                     my $bucket = $coast_grid{coast_key($ix,$iy,$iz)} or next;
-                    for (my $off=0; $off<length($bucket); $off+=12) {
+
+                    # Exact whole-bucket rejection.  If even the closest
+                    # possible point in this bucket's AABB cannot beat best2,
+                    # none of its coastline samples can help.
+                    next if coast_bucket_min_dist2(
+                        $x,$y,$z,$ix,$iy,$iz
+                    ) >= $best2;
+
+                    my $blen = length($bucket);
+                    for (my $off=0; $off<$blen; $off+=12) {
                         my ($bx,$by,$bz) = unpack('f<3', substr($bucket,$off,12));
+
+                        # Exact progressive rejection.  All squared terms are
+                        # non-negative, so once the partial sum reaches best2
+                        # there is no need to compute the remaining axes.
                         my $dx = $x - $bx;
+                        my $d2 = $dx*$dx;
+                        next if $d2 >= $best2;
+
                         my $dy = $y - $by;
+                        $d2 += $dy*$dy;
+                        next if $d2 >= $best2;
+
                         my $dz = $z - $bz;
-                        my $d2 = $dx*$dx + $dy*$dy + $dz*$dz;
+                        $d2 += $dz*$dz;
+
                         $best2 = $d2 if $d2 < $best2;
                     }
                 }
