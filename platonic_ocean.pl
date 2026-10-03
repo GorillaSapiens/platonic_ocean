@@ -177,6 +177,8 @@ Options:
   --help
 
 Search checkpoints are written once per hour as .<solid>.checkpoint in --out.
+Signed scoring classifies land/ocean first and only performs expensive coast-distance
+lookups for vertices that can actually determine the maximin score.
 On restart, an unfinished solid resumes from its saved random-search trial.
 Completed solids with both CSV and XPM outputs are skipped.
 
@@ -845,19 +847,52 @@ sub rotate_vertices {
 
 sub score_orientation {
     my ($verts,$q,$cutoff) = @_;
-    my $worst = 1e99;
+
+    # Classification is vastly cheaper than nearest-coast distance.  Do it
+    # first for every vertex.  If there is even one land vertex, every ocean
+    # vertex has a positive signed distance and therefore cannot determine
+    # the minimum signed distance for this orientation.
+    my @land;
+    my @ocean;
 
     for my $v (@$verts) {
-        my ($x,$y,$z) = rotate_one($q,$v);
+        my @p = rotate_one($q,$v);
+        if (is_ocean_vec(@p)) {
+            push @ocean, \@p;
+        }
+        else {
+            push @land, \@p;
+        }
+    }
 
-        my $d = nearest_coast_km($x,$y,$z);
-        $d = -$d unless is_ocean_vec($x,$y,$z);
+    if (@land) {
+        # Any land orientation is negative.  If the current cutoff is already
+        # non-negative, this orientation cannot possibly enter the top set.
+        return -1.0 if $cutoff >= 0.0;
 
-        $worst = $d if $d < $worst;
+        my $worst = 0.0;
 
-        # Maximin pruning remains valid with signed distances: once the
-        # current worst vertex cannot beat the cutoff, later vertices can
-        # only leave it unchanged or make it worse.
+        for my $p (@land) {
+            my $signed = -nearest_coast_km(@$p);
+            $worst = $signed if $signed < $worst;
+
+            # Exact maximin pruning: additional land vertices can only make
+            # the minimum more negative.
+            return $worst if $worst <= $cutoff;
+        }
+
+        return $worst;
+    }
+
+    # All vertices are ocean.  Only in this case do we need coastline
+    # distances for every vertex, because the smallest positive distance is
+    # the maximin score.
+    my $worst = 1e99;
+
+    for my $p (@ocean) {
+        my $signed = nearest_coast_km(@$p);
+        $worst = $signed if $signed < $worst;
+
         return $worst if $worst <= $cutoff;
     }
 
