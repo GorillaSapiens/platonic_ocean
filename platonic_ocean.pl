@@ -34,7 +34,7 @@ use constant COAST_STEP_DEG => 0.05;
 # 3-D spatial hash cell width in unit-sphere chord coordinates.
 use constant COAST_CELL => 0.04;
 use constant COAST_NCELL => 51;   # enough for [-1,+1] at width 0.04
-use constant CHECKPOINT_SECONDS => 3600;
+use constant CHECKPOINT_SECONDS => 300;
 
 my $cache_dir = 'osm-cache';
 my $out_dir   = '.';
@@ -108,8 +108,14 @@ build_coast_cache_from_shp($coast_shp, $coast_raw, $base_raw)
 
 my $base_xpm = read_exact_file($base_raw, XW * XH);
 my %coast_grid;
-my $coast_samples = load_coast_sample_cache($coast_raw, \%coast_grid);
-print "coast samples: $coast_samples\n";
+my $coast_occupied = '';
+my $coast_samples = load_coast_sample_cache(
+    $coast_raw, \%coast_grid, \$coast_occupied
+);
+my $occupied_buckets = 0;
+$occupied_buckets++ for grep { vec($coast_occupied, $_, 1) }
+    0 .. COAST_NCELL * COAST_NCELL * COAST_NCELL - 1;
+print "coast samples: $coast_samples; occupied shell buckets: $occupied_buckets\n";
 
 my %solids = platonic_solids();
 my @order = qw(tetrahedron cube octahedron dodecahedron icosahedron);
@@ -176,7 +182,7 @@ Options:
   --refresh        re-download/rebuild cached OSM data
   --help
 
-Search checkpoints are written once per hour as .<solid>.checkpoint in --out.
+Search checkpoints are written every five minutes as .<solid>.checkpoint in --out.
 Signed scoring classifies land/ocean first and only performs expensive coast-distance
 lookups for vertices that can actually determine the maximin score.
 On restart, an unfinished solid resumes from its saved random-search trial.
@@ -554,7 +560,7 @@ sub add_coast_sample_packed {
 }
 
 sub load_coast_sample_cache {
-    my ($path, $grid) = @_;
+    my ($path, $grid, $occupied_ref) = @_;
     open my $fh, '<:raw', $path or die "open $path: $!\n";
     my $count = 0;
 
@@ -572,6 +578,15 @@ sub load_coast_sample_cache {
     }
 
     close $fh;
+
+    # Every occupied coastline bucket necessarily intersects the unit sphere.
+    # Keep a compact bitset so nearest-coast queries can reject theoretical
+    # 3-D buckets with one vec() test instead of paying for a hash miss.
+    $$occupied_ref = '';
+    for my $key (keys %$grid) {
+        vec($$occupied_ref, $key, 1) = 1;
+    }
+
     return $count;
 }
 
@@ -693,7 +708,16 @@ sub nearest_coast_km {
                 for my $iz ($zmin .. $zmax) {
                     next if $r > 0 &&
                         abs($ix-$cx) < $r && abs($iy-$cy) < $r && abs($iz-$cz) < $r;
-                    my $bucket = $coast_grid{coast_key($ix,$iy,$iz)} or next;
+
+                    my $key = coast_key($ix,$iy,$iz);
+
+                    # Coastline samples live on the unit sphere.  The bitset
+                    # contains only buckets that actually hold coastline
+                    # samples, which is stronger than merely testing whether
+                    # the bucket's AABB intersects the unit-sphere shell.
+                    next unless vec($coast_occupied, $key, 1);
+
+                    my $bucket = $coast_grid{$key};
 
                     # Exact whole-bucket rejection.  If even the closest
                     # possible point in this bucket's AABB cannot beat best2,
